@@ -10,6 +10,8 @@ import Prelude
 import Debug.Trace 
 
 import Text.PrettyPrint.Boxes
+import Data.List (intersperse)
+import Data.List.Split
     
 testFoo :: (Show a) => a -> a
 testFoo x = trace ("\nTesting Value: " ++ show x ++ "\n") x
@@ -33,7 +35,10 @@ type Constraint = Maybe Int
 
 type Component = [Box]
 convertBox :: [String] -> [Box]
+-- convertBox = map text
 convertBox = map text
+
+
 -- Tag , Direction , VObject
 -- type Galley = (String, Direction, VObject)
 data Galley a = Galley 
@@ -78,6 +83,9 @@ Nothing &? c = True
 instance Constrainer Int where
   cDim n = n
 
+-- instance Constrainer Box where
+--   cDim = rows
+
 instance Constrainer c => Constrainer (Maybe c) where
   cDim Nothing = 0
   cDim (Just o) = cDim o
@@ -94,15 +102,16 @@ class IsString s where
 instance IsChar a => IsString [a] where
   isstring = [ischar]
 
-instance IsString a => Constrainer [a] where
-  cDim c = length c
-
 instance IsString Box where
   isstring = text "?" 
 instance IsChar Box where
   ischar = text "?"
-instance Constrainer Box where
-  cDim n = rows n
+
+instance Constrainer a => Constrainer [a] where
+  cDim = sum . map cDim
+    
+-- instance Constrainer Box where
+--   cDim n = rows n
 
 infixr 6 #
 class Constrainer a => GalleyComponent a where 
@@ -127,14 +136,18 @@ class Constrainer a => GalleyComponent a where
   delay :: a -> a
   vExpand :: a -> a
   recurseF :: ((b -> a) -> (b -> a)) -> (b -> a)
+  checkConstraint :: a -> (Box -> Int)
 
-  
+trueHeight, trueWidth :: [Box] -> Int
+trueHeight = sum . fmap rows 
+trueWidth = sum . fmap cols 
+
 data HObject = HObject
-  { heval           :: ShouldForce -> Constraint -> EvalResult HObject
-  , hreceive        :: ShouldForce -> Constraint -> Galley HObject -> RcvResult HObject
-  , hopenTargets    :: [String]
-  , hdelayedTargets :: [String]
-  , hhigh         :: Int
+  { heval            :: ShouldForce -> Constraint -> EvalResult HObject
+  , hreceive         :: ShouldForce -> Constraint -> Galley HObject -> RcvResult HObject
+  , hopenTargets     :: [String]
+  , hdelayedTargets  :: [String]
+  , width            :: Int
   } -- deriving Show
 instance Show HObject where
   show obj =
@@ -142,10 +155,11 @@ instance Show HObject where
     (show $ hopenTargets obj) ++
     "Delayed Targets: " ++
     (show $ hdelayedTargets obj) ++ 
-    "Object Width: " ++ (show $ hhigh obj)
+    "Object Width: " ++ (show $ width obj)
 instance Constrainer HObject where
-  cDim = hhigh
+  cDim = width
 instance GalleyComponent HObject where
+  checkConstraint _ = cols
   evaluateGC       = heval          
   receiveGC        = hreceive       
   openTargetsGC    = hopenTargets   
@@ -156,7 +170,7 @@ instance GalleyComponent HObject where
       , hreceive = (\forcing co g -> rcverror g "nul")
       , hopenTargets = []
       , hdelayedTargets = []
-      , hhigh = 0
+      , width = 0
       }
   force o =
     case heval o True Nothing of
@@ -169,13 +183,13 @@ instance GalleyComponent HObject where
         HObject
         { heval =
             (\forcing co ->
-                if co &? c
+                if co &? (checkConstraint o <$> c)
                   then Yielding c nul
                   else NoSpace o)
         , hreceive = (\forcing co g -> rcverror g "singleton")
         , hopenTargets = []
         , hdelayedTargets = []
-        , hhigh = length c
+        , width = trueWidth c
         }
   prefix c o = o'
     where
@@ -183,14 +197,14 @@ instance GalleyComponent HObject where
         HObject
         { heval =
             (\forcing co ->
-                if co &? c
+                if co &? (checkConstraint o <$> c)
                   then Yielding c o
                   else NoSpace o')
         , hreceive =
-            (\forcing co g -> updateRcvResult (prefix c) $ hreceive o forcing (co &- c) g)
+            (\forcing co g -> updateRcvResult (prefix c) $ hreceive o forcing (co &- (checkConstraint o <$> c)) g)
         , hopenTargets = hopenTargets o
         , hdelayedTargets = hdelayedTargets o
-        , hhigh = length c + hhigh o
+        , width = trueWidth c + width o
         }
   galley g =
     HObject
@@ -198,7 +212,7 @@ instance GalleyComponent HObject where
     , hreceive = (\forcing co g' -> rcverror g' "galley")
     , hopenTargets = []
     , hdelayedTargets = []
-    , hhigh = 0
+    , width = 0
     }
   suffix c o = o'
     where
@@ -206,14 +220,14 @@ instance GalleyComponent HObject where
         HObject
         { heval =
             (\forcing co ->
-                case heval o forcing (co &- c) of
+                case heval o forcing (co &- (checkConstraint o <$> c)) of
                   Disappearing -> heval (singleton c) forcing co
                   r -> r {obj = suffix c (obj r)})
         , hreceive =
-            (\forcing co g -> updateRcvResult (suffix c) $ hreceive o forcing (co &- c) g)
+            (\forcing co g -> updateRcvResult (suffix c) $ hreceive o forcing (co &- (checkConstraint o <$> c)) g)
         , hopenTargets = hopenTargets o
         , hdelayedTargets = hdelayedTargets o
-        , hhigh = length c + hhigh o
+        , width = trueWidth c + width o
         }
   o1 # o2 = o
     where
@@ -251,25 +265,25 @@ instance GalleyComponent HObject where
                       sendO2 $ sendO1 $ sendD2 $ sendD1 $ rcverror g "(#)")
         , hopenTargets = hopenTargets o1 ++ hopenTargets o2
         , hdelayedTargets = hdelayedTargets o1 ++ hdelayedTargets o2
-        , hhigh = hhigh o1 + hhigh o2
+        , width = width o1 + width o2
         }
   high h o = o'
     where
       eval' forcing =
         case heval o forcing (Just h) of
-          NoSpace o1 -> Yielding (fill h (convertBox ["@High: HObject too large"])) nul
+          NoSpace o1 -> Yielding (fill h (convertBox ["@Wide: HObject too large"])) nul
           Disappearing -> Yielding (strut h) nul
           Suspended o1 -> Suspended (high h o1)
           Sending gs o1 -> Sending gs (high h o1)
           Yielding c o1 ->
-            let h' = h - length c
+            let h' = h - trueHeight c
             in if h' < 0
-                  then error "@High: yielded component too hhigh!"
+                  then error "@Wide: yielded component too wide!"
                   else case heval (high h' o1) forcing Nothing of
                         Yielding c' o2 -> Yielding (c ++ c') o2
                         Sending gs o2 -> Sending gs (prefixConc c o2)
                         Suspended o2 -> Suspended (prefixConc c o2)
-                        NoSpace o2 -> error "@High: NoSpace in recursive call!"
+                        NoSpace o2 -> error "@Wide: NoSpace in recursive call!"
                         Disappearing -> Yielding (fill h c) nul
       o' =
         HObject
@@ -285,7 +299,7 @@ instance GalleyComponent HObject where
             (\forcing co g -> updateRcvResult (high h) $ hreceive o forcing (Just h) g)
         , hopenTargets = hopenTargets o
         , hdelayedTargets = hdelayedTargets o
-        , hhigh = h
+        , width = h
         }
   prefixConc c o = o'
     where
@@ -293,18 +307,18 @@ instance GalleyComponent HObject where
         HObject
         { heval =
             (\forcing co ->
-                case heval o forcing (co &- c) of
+                case heval o forcing (co &- (checkConstraint o <$> c)) of
                   Disappearing -> Yielding c nul
                   Yielding c' o2 -> Yielding (c ++ c') o2
                   r -> r {obj = prefixConc c (obj r)})
         , hreceive =
             (\forcing co g ->
-                if co &? c
-                  then updateRcvResult (prefixConc c) $ hreceive o forcing (co &- c) g
+                if co &? (checkConstraint o <$> c)
+                  then updateRcvResult (prefixConc c) $ hreceive o forcing (co &- (checkConstraint o <$> c)) g
                   else RcvResult False [forward g] o')
         , hopenTargets = hopenTargets o
         , hdelayedTargets = hdelayedTargets o
-        , hhigh = length c + hhigh o
+        , width = trueWidth c + width o
         }
   attach name = attach'
     where
@@ -323,7 +337,7 @@ instance GalleyComponent HObject where
                           else Suspended (attach' o1)
                       Sending gs o1 -> Sending gs (attach' o1)
                       Yielding c o1 ->
-                        if co &? c
+                        if co &? (checkConstraint o <$> c)
                           then Yielding c (attach' o1)
                           else Sending
                                 [Galley name Following $ attach' (prefix c o1) ]
@@ -332,7 +346,7 @@ instance GalleyComponent HObject where
                 (\forcing co g -> updateRcvResult attach' $ hreceive o forcing co g)
             , hopenTargets = hopenTargets o
             , hdelayedTargets = hdelayedTargets o
-            , hhigh = 0
+            , width = 0
             }
   target name = o
     where
@@ -362,7 +376,7 @@ instance GalleyComponent HObject where
                                     Sending gs1 o'' ->
                                       RcvResult True gs1 (attach name o'' # o)
                                     Yielding c o'' ->
-                                      if co &? c
+                                      if co &? (checkConstraint o <$> c)
                                         then let g' = Galley name' Following o''
                                                  RcvResult rcv gs1 o1 = 
                                                    hreceive
@@ -376,7 +390,7 @@ instance GalleyComponent HObject where
                                                         nul)
         , hopenTargets = [name]
         , hdelayedTargets = []
-        , hhigh = 0
+        , width = 0
         }
   recurse ff = o
     where
@@ -402,7 +416,7 @@ instance GalleyComponent HObject where
                       else rcverror g "recurse")
         , hopenTargets = []
         , hdelayedTargets = targs
-        , hhigh = 0
+        , width = 0
         }
   delay o = o'
     where
@@ -425,7 +439,7 @@ instance GalleyComponent HObject where
                       else rcverror g "delay")
         , hopenTargets = []
         , hdelayedTargets = targs
-        , hhigh = 0
+        , width = 0
         }
       targs = targets o
   vExpand o = o'
@@ -446,13 +460,13 @@ instance GalleyComponent HObject where
                       Yielding c o1 ->
                         Yielding
                           c
-                          (if length c < h
+                          (if trueHeight c < h
                             then vExpand o1
                             else o1))
         , hreceive = (\frc co g -> updateRcvResult vExpand (hreceive o frc co g))
         , hopenTargets = hopenTargets o
         , hdelayedTargets = hdelayedTargets o
-        , hhigh = hhigh o
+        , width = width o
         }
   recurseF ff = f
     where
@@ -481,9 +495,9 @@ instance GalleyComponent HObject where
                           else rcverror g "recurseF")
             , hopenTargets = []
             , hdelayedTargets = targs
-            , hhigh = 0
+            , width = 0
             }
-  prepareComp _ = hcat left
+  prepareComp _ = hcat center1
 type ShouldForce = Bool 
 data VObject = VObject
   { eval           :: ShouldForce -> Constraint -> EvalResult VObject
@@ -502,6 +516,7 @@ instance Show VObject where
 instance Constrainer VObject where
   cDim = height
 instance GalleyComponent VObject where
+  checkConstraint _ = rows
   evaluateGC       = eval          
   receiveGC        = receive       
   openTargetsGC    = openTargets   
@@ -525,13 +540,13 @@ instance GalleyComponent VObject where
         VObject
         { eval =
             (\forcing co ->
-                if co &? c
+                if co &? (checkConstraint o <$> c)
                   then Yielding c nul
                   else NoSpace o)
         , receive = (\forcing co g -> rcverror g "singleton")
         , openTargets = []
         , delayedTargets = []
-        , height = length c
+        , height = trueHeight c
         }
   prefix c o = o'
     where
@@ -539,14 +554,14 @@ instance GalleyComponent VObject where
         VObject
         { eval =
             (\forcing co ->
-                if co &? c
+                if co &? (checkConstraint o <$> c)
                   then Yielding c o
                   else NoSpace o')
         , receive =
-            (\forcing co g -> updateRcvResult (prefix c) $ receive o forcing (co &- c) g)
+            (\forcing co g -> updateRcvResult (prefix c) $ receive o forcing (co &- (checkConstraint o <$> c)) g)
         , openTargets = openTargets o
         , delayedTargets = delayedTargets o
-        , height = length c + height o
+        , height = trueHeight c + height o
         }
   galley g =
     VObject
@@ -562,14 +577,14 @@ instance GalleyComponent VObject where
         VObject
         { eval =
             (\forcing co ->
-                case eval o forcing (co &- c) of
+                case eval o forcing (co &- (checkConstraint o <$> c)) of
                   Disappearing -> eval (singleton c) forcing co
                   r -> r {obj = suffix c (obj r)})
         , receive =
-            (\forcing co g -> updateRcvResult (suffix c) $ receive o forcing (co &- c) g)
+            (\forcing co g -> updateRcvResult (suffix c) $ receive o forcing (co &- (checkConstraint o <$> c)) g)
         , openTargets = openTargets o
         , delayedTargets = delayedTargets o
-        , height = length c + height o
+        , height = trueHeight c + height o
         }
   o1 # o2 = o
     where
@@ -618,7 +633,7 @@ instance GalleyComponent VObject where
           Suspended o1 -> Suspended (high h o1)
           Sending gs o1 -> Sending gs (high h o1)
           Yielding c o1 ->
-            let h' = h - length c
+            let h' = h - trueHeight c
             in if h' < 0
                   then error "@High: yielded component too high!"
                   else case eval (high h' o1) forcing Nothing of
@@ -649,18 +664,18 @@ instance GalleyComponent VObject where
         VObject
         { eval =
             (\forcing co ->
-                case eval o forcing (co &- c) of
+                case eval o forcing (co &- (checkConstraint o <$> c)) of
                   Disappearing -> Yielding c nul
                   Yielding c' o2 -> Yielding (c ++ c') o2
                   r -> r {obj = prefixConc c (obj r)})
         , receive =
             (\forcing co g ->
-                if co &? c
-                  then updateRcvResult (prefixConc c) $ receive o forcing (co &- c) g
+                if co &? (checkConstraint o <$> c)
+                  then updateRcvResult (prefixConc c) $ receive o forcing (co &- (checkConstraint o <$> c)) g
                   else RcvResult False [forward g] o')
         , openTargets = openTargets o
         , delayedTargets = delayedTargets o
-        , height = length c + height o
+        , height = trueHeight c + height o
         }
   attach name = attach'
     where
@@ -679,7 +694,7 @@ instance GalleyComponent VObject where
                           else Suspended (attach' o1)
                       Sending gs o1 -> Sending gs (attach' o1)
                       Yielding c o1 ->
-                        if co &? c
+                        if co &? (checkConstraint o <$> c)
                           then Yielding c (attach' o1)
                           else Sending
                                 [Galley name Following $ attach' (prefix c o1) ]
@@ -718,7 +733,7 @@ instance GalleyComponent VObject where
                                     Sending gs1 o'' ->
                                       RcvResult True gs1 (attach name o'' # o)
                                     Yielding c o'' ->
-                                      if co &? c
+                                      if co &? (checkConstraint o <$> c)
                                         then let g' = Galley name' Following o''
                                                  RcvResult rcv gs1 o1 = 
                                                    receive
@@ -802,7 +817,7 @@ instance GalleyComponent VObject where
                       Yielding c o1 ->
                         Yielding
                           c
-                          (if length c < h
+                          (if trueHeight c < h
                             then vExpand o1
                             else o1))
         , receive = (\frc co g -> updateRcvResult vExpand (receive o frc co g))
@@ -839,7 +854,7 @@ instance GalleyComponent VObject where
             , delayedTargets = targs
             , height = 0
             }
-  prepareComp _ = vcat left
+  prepareComp _ = vcat left 
 
 ocGalleysFrom1, ocGalleysFrom2 :: GalleyComponent a => Bool -> Constraint -> [Galley a] -> SToc a
 ocGalleysFrom1 forcing co = stfold (ocGalleyFrom1 forcing co)
@@ -919,133 +934,6 @@ isConstraintMet Nothing = False
 isConstraintMet (Just 0) = True
 isConstraintMet _ = False
 
--- displayObject :: forall a. GalleyComponent a => Int -> Int -> a -> IO ()
--- displayObject n wid o = putStr $ unlines $ frame n wid $ force o
-
--- frame :: Int -> Int -> [Component] -> Component
--- frame n wid [] = []
--- frame n wid cs = overline (f cs1) ++ frame n wid cs2
---   where
---     (cs1, cs2) = splitAt n cs
---     l2 s = l1 s ++ "|"
---     l1 s = '|' : take wid (s ++ repeat ' ')
---     b2 = [replicate (wid + 2) '-']
---     b1 = [replicate (wid + 1) '-']
---     p1 c = map l1 c ++ b1
---     p2 c = map l2 c ++ b2
---     f [] = []
---     f [c] = p2 c
---     f (c:cs) = zipWith (++) (p1 c) (f cs)
---     overline l@(s:ss) = replicate (length s) '-' : l
-
--- printObject :: VObject -> IO ()
--- printObject = putStr . string_of_Object True
--- printObject' :: VObject -> IO ()
--- printObject' = putStr . string_of_Object False
-
--- string_of_Object :: GalleyComponent a => Bool -> a -> String
--- string_of_Object forcing = f 10 []
---   where
---     f 0 gs o = "<<<Terminating.>>>\n"
---     f n gs o =
---       let printstray gs =
---             unlines
---               (text "====================" :
---                 map string_of_stray_galley gs ++ (convertBox(["####################"])))
---       in case evaluateGC o forcing Nothing of
---             Disappearing -> "<<<Disappearing>>>\n" ++ printstray gs
---             Suspended o' ->
---               "<<<Suspended!!!>>>\n" ++
---               printstray gs ++
---               case gs of
---                 [] -> f (n - 1) [] o'
---                 (g@(Galley name d og):gs1) ->
---                   if name `elem` targets o'
---                     then case receiveGC o' False Nothing g of
---                           RcvResult False gs2 o2 -> "<<<NoSpaceR>>>\n" ++ f (n - 1) (gs1 ++ gs2) o2
---                           RcvResult True gs2 o2 -> "<<<Received " ++ name ++ ">>>\n" ++ f n (gs1 ++ gs2) o2
---                     else f n gs1 o'
---             Sending gs' o' ->
---               "<<<Sending!!!>>>\n" ++
---               printstray gs' ++
---               case gs ++ gs' of
---                 [] -> f (n - 1) [] o'
---                 (g@(Galley name d og):gs1) ->
---                   if name `elem` targets o'
---                     then case receiveGC o' False Nothing g of
---                               RcvResult False gs2 o2 -> "<<<NoSpaceR>>>\n" ++ f (n - 1) (gs1 ++ gs2) o2
---                               RcvResult True  gs2 o2 -> "<<<Received " ++ name ++ ">>>\n" ++ f n (gs1 ++ gs2) o2
---                     else f n gs1 o'
---             NoSpace o' -> "<<<NoSpace --- continuing>>>\n" ++ f n gs o'
---             Yielding c o' -> string_of_Component c ++ f n gs o'
-
--- string_of_stray_galley :: GalleyComponent a => Galley a -> String
--- string_of_stray_galley (Galley name d o) =
---   "No target for galley `" ++
---   name ++
---   "&&" ++
---   show d ++
---   "; h=" ++
---   show (dimGC o) ++
---   "\n" ++
---   string_of_Object True o ++
---   "~~~~~~~~~~ end of galley `" ++ name ++ "&&" ++ show d ++ "\n"
-
--- string_of_Component :: Component -> String
--- string_of_Component c = unlines (map ('|' :) c ++ (convertBox(["--------------------"])))
-
-
-
-
-
-pageList = recurse (page #)
-
-page = high 12 (target "TextPlace" # footSect)
-
-footSect = delay $ prefix (convertBox(["", "-----"])) footList
-
-footList = recurse (target "FootPlace" #)
-
-txt t = galley $ Galley "TextPlace" Preceding t
-
-footNote f = galley $ Galley "FootPlace" Following f
-
-npage :: Int -> VObject
-npage = npage' 14
-
-npage' :: Int -> Int -> VObject
-npage' bounds n =
-  high bounds $
-  prefix
-    (convertBox(["          - " ++ show n ++ "-", ""]))
-    (vExpand (target "TextPlace") # footSect)
-
-npageList :: VObject
-npageList = npageList' 14 
-npageList':: Int -> VObject
-npageList' bounds =
-  let f mkpl n = npage' bounds n # mkpl (n + 1)
-  in recurseF f 1 -- testFoo $ 
-  
-nextLine' :: GalleyComponent a => Bool -> Int -> Int -> a
-nextLine' showLine bounds n =
-  high bounds $
-  prefix
-    (if showLine then (convertBox [show n ++ ":", ""]) else [])
-    (vExpand (target "TextPlace"))
-nextLine :: GalleyComponent a => Int -> Int -> a
-nextLine = nextLine' False
-
-nLinesList :: GalleyComponent a => Int -> a
-nLinesList = nLinesList' False
-nLinesList' :: GalleyComponent a => Bool -> Int -> a
-nLinesList' showNum bounds =
-  let f mkpl n = nextLine' showNum bounds n # mkpl (n + 1)
-  in recurseF f 1 -- testFoo $ 
-  
-rcverror g s = error ("Cannot receive: " ++ s ++ "\n" ++ show g)
-
-
 -- | Pretty Stuff
 encloseSymbols :: Box -> Box -> Box -> Box 
 encloseSymbols rowSym colSym = addColBarSym colSym . addRowBarSym rowSym
@@ -1097,23 +985,43 @@ bodycsV = [
   , "here, we find that we "
   , "cannot omit this English "
   , "m aster."] ]
-bodycsH = map (map text)
-        $ splitList.splitList 
-        $ concat.concat 
-        $ bodycsV
+-- bodycsH = map (map text)
+--         $ splitList.splitList 
+--         $ concat.concat 
+--         $ bodycsV
+
+bodycsH = (:) [lout] $ splitList
+        -- $ map (encloseBoxQuick "*")
+        -- $ (intersperse (text ""))
+        -- $ columns left 10 1 
+        $ map text $ split (oneOf " ")
+        " In the world of music\
+        \ England is supposed\
+        \ to be a mere province.\
+        \ If she produces an\
+        \ indifferent\
+        \ composer\
+        \ or performer, that is\
+        \ regarded elsewhere as\
+        \ perfectly normal and\
+        \ natural; but if foreign\
+        \ students of musical\
+        \ history\
+        \ have\
+        \ to"
 
 main = do
   putStrLn ""
-  let res = forceV vObj
+  let res = forceV vObj -- (forceH bodyWithLines) --
   putStr $ render 
-         $ hcat left 
-         $ map encloseBoxDef
-         $ prepareComp vObj <$> res
+          $ hcat left 
+          $ map encloseBoxDef
+          $ prepareComp vObj <$> res
   where 
     body :: GalleyComponent a => [Component] -> a
     body = foldr prefix nul 
     bodyWithLines :: HObject
-    bodyWithLines = nLinesList' True 14 # txt (body bodycsH)
+    bodyWithLines = nLinesList' True 15 # txt (body bodycsH)
     forceH :: HObject -> [Component]
     forceH = force --[hcat left <$> force x]
     h2v :: HObject -> VObject
@@ -1122,22 +1030,92 @@ main = do
     vObj = vPages $ h2v bodyWithLines
     forceV :: VObject -> [Component]
     forceV = force
-    vPages v = npageList' 13 # txt (heading 1 # v)
+    vPages :: VObject -> VObject
+    vPages v = npageList' 20 # txt (heading 1 # v)
+
+    
+----------------------------------------------------------------------------------------
+-- | Lout like 
+infixl 6 -/
+infixl 6 -//
+infixl 7 -|
+infixl 7 -||
+infixl 8 -&
+-- object / gap object               Vertical concatenation with mark alignment
+(-/) lbox rbox  = vcat left [lbox,rbox]
+-- object // gap object              Vertical concatenation with left justification
+(-//) lbox rbox = vcat center1 [lbox,rbox]
+-- object | gap object               Horizontal concatenation with mark alignment
+(-|) lbox  rbox = hcat left [lbox,rbox]
+-- object || gap object              Horizontal concatenation with top-justification
+(-||) lbox rbox = hcat top [lbox,rbox]
+-- object & gap object               Horizontal concatenation within paragraphs
+(-&) lbox  rbox = hcat bottom [lbox,rbox]
 
 
+lout :: Box
+lout = ( a -// c -| d ) -| ( b -/ e ) -/ ( f -/ i ) -| ( g -| h -// j )
+a = encloseBoxDef $ text "a" --  
+b = encloseBoxDef $ text "b" --  
+c = encloseBoxDef $ text "c" --  
+d = encloseBoxDef $ text "d" --  
+e = encloseBoxDef $ text "e" --  
+f = encloseBoxDef $ text "f" --  
+g = encloseBoxDef $ text "g" --  
+h = encloseBoxDef $ text "h" --  
+i = encloseBoxDef $ text "i" --  
+j = encloseBoxDef $ text "j" --  
+----------------------------------------------------------------------------------------
 
+pageList = recurse (page #)
 
+page = high 12 (target "TextPlace" # footSect)
 
+footSect = delay $ prefix (convertBox(["", "-----"])) footList
 
+footList = recurse (target "FootPlace" #)
 
+txt t = galley $ Galley "TextPlace" Preceding t
 
+footNote f = galley $ Galley "FootPlace" Following f
 
+npage :: Int -> VObject
+npage = npage' 14
 
-blom n =
-  singleton
-    (convertBox ["(" ++ show n ++ ") Blom, Eric. Some", "Great Composers.", "Oxford, 1944."])
+npage' :: Int -> Int -> VObject
+npage' bounds n =
+  high bounds $
+  prefix
+    (convertBox(["          - " ++ show n ++ "-", ""]))
+    (vExpand (target "TextPlace") # footSect)
 
-heading n = prefix (convertBox ["PURCELL(" ++ show n ++ ")"]) $ footNote (blom n)
+npageList :: VObject
+npageList = npageList' 14 
+npageList':: Int -> VObject
+npageList' bounds =
+  let f mkpl n = npage' bounds n # mkpl (n + 1)
+  in recurseF f 1 -- testFoo $ 
+  
+nextLine' :: GalleyComponent a => Bool -> Int -> Int -> a
+nextLine' showLine bounds n =
+  high bounds $
+  prefix
+    (if showLine then (convertBox [show n ++ ":", ""]) else [])
+    (vExpand (target "TextPlace"))
+nextLine :: GalleyComponent a => Int -> Int -> a
+nextLine = nextLine' False
+
+nLinesList :: GalleyComponent a => Int -> a
+nLinesList = nLinesList' False
+nLinesList' :: GalleyComponent a => Bool -> Int -> a
+nLinesList' showNum bounds =
+  let f mkpl n = nextLine' showNum bounds n # mkpl (n + 1)
+  in recurseF f 1 -- testFoo $ 
+  
+rcverror g s = error ("Cannot receive: " ++ s ++ "\n" ++ show g)
+
+    
+
 
 -- purcell = heading 1 # body
 

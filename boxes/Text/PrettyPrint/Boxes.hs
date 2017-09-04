@@ -1,5 +1,5 @@
-{-# LANGUAGE CPP #-}
-#include "boxes.h"
+-- {-# LANGUAGE CPP #-}
+-- #include "boxes.h"
 
 -----------------------------------------------------------------------------
 -- |
@@ -14,87 +14,87 @@
 -- using a simple box model.
 --
 -----------------------------------------------------------------------------
-module Text.PrettyPrint.Boxes
-    ( -- * Constructing boxes
-#ifdef TESTING
-      Box(Box, content)
-#else
-      Box
-#endif
-    , nullBox
-    , emptyBox
-    , char
-    , text
-    , para
-    , columns
+module Text.PrettyPrint.Boxes where
+    -- ( -- * Constructing boxes
+-- #ifdef TESTING
+--       Box(Box, content)
+-- #else
+--       Box
+-- #endif
+--     , nullBox
+--     , emptyBox
+--     , char
+--     , text
+--     , para
+--     , columns
 
-      -- * Layout of boxes
+--       -- * Layout of boxes
 
-    , (<>)
-    , (<+>)
-    , hcat
-    , hsep
+--     , (<>)
+--     , (<+>)
+--     , hcat
+--     , hsep
 
-    , (//)
-    , (/+/)
-    , vcat
-    , vsep
+--     , (//)
+--     , (/+/)
+--     , vcat
+--     , vsep
 
-    , punctuateH, punctuateV
+--     , punctuateH, punctuateV
 
-    -- * Alignment
+--     -- * Alignment
 
-#ifdef TESTING
-    , Alignment(..)
-#else
-    , Alignment
-#endif
+-- #ifdef TESTING
+--     , Alignment(..)
+-- #else
+--     , Alignment
+-- #endif
 
-#ifdef TESTING
-    , Content(..)
-#endif
-    , left, right
-    , top, bottom
-    , center1, center2
+-- #ifdef TESTING
+--     , Content(..)
+-- #endif
+--     , left, right
+--     , top, bottom
+--     , center1, center2
 
-    , moveLeft
-    , moveRight
-    , moveUp
-    , moveDown
+--     , moveLeft
+--     , moveRight
+--     , moveUp
+--     , moveDown
 
-    , alignHoriz
-    , alignVert
-    , align
+--     , alignHoriz
+--     , alignVert
+--     , align
 
-    -- * Inspecting boxes
+--     -- * Inspecting boxes
 
-    , rows
-    , cols
+--     , rows
+--     , cols
 
-    -- * Rendering boxes
+--     -- * Rendering boxes
 
-    , render
-    , printBox
+--     , render
+--     , printBox
 
-    ) where
+--     ) where
 
-#if MIN_VERSION_base(4,8,0)
+-- #if MIN_VERSION_base(4,8,0)
 import Prelude hiding (Word)
-#else
-import Data.Foldable (Foldable (foldr))
-import Prelude hiding (foldr)
-#endif
+-- #else
+-- import Data.Foldable -- (Foldable(foldr))
+-- import Prelude hiding (foldr)
+-- #endif
 import Data.Foldable (toList)
 
-#if MIN_VERSION_base(4,4,0)
+-- #if MIN_VERSION_base(4,4,0)
 import Data.String (words, unwords)
-#else
+-- #else
 import Data.List (words, unwords)
-#endif
+-- #endif
 
-#ifdef OVERLOADED_STRINGS
-import Data.String (IsString(..))
-#endif
+-- #ifdef OVERLOADED_STRINGS
+import Data.String -- (IsString(..))
+-- #endif
 
 import Control.Arrow ((***), first)
 import Data.List (foldl', intersperse)
@@ -109,11 +109,11 @@ data Box = Box { rows    :: Int
                }
   deriving (Show)
 
-#ifdef OVERLOADED_STRINGS
+-- #ifdef OVERLOADED_STRINGS
 -- | Convenient ability to use bare string literals as boxes.
 instance IsString Box where
   fromString = text
-#endif
+-- #endif
 
 -- | Data type for specifying the alignment of boxes.
 data Alignment = AlignFirst    -- ^ Align at the top/left.
