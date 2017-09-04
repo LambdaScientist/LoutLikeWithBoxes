@@ -16,7 +16,12 @@ fooBar str x = trace ("\n" ++ str ++ "  "++ show x ++ "\n") x
 type Component = [String]
 
 -- Tag , Direction , Object
-type Galley = (String, Direction, Object)
+-- type Galley = (String, Direction, Object)
+data Galley = Galley 
+            { tName :: String 
+            , direction :: Direction
+            , galleyObject :: Object
+            } deriving (Show)
 
 data Direction
   = Preceding
@@ -31,9 +36,9 @@ footSect = delay $ prefix ["", "-----"] footList
 
 footList = recurse (target "FootPlace" #)
 
-text t = galley ("TextPlace", Preceding, t)
+text t = galley $ Galley "TextPlace" Preceding t
 
-footNote f = galley ("FootPlace", Following, f)
+footNote f = galley $ Galley "FootPlace" Following f
 
 type ShouldForce = Bool 
 data Object = Object
@@ -158,15 +163,15 @@ ocMkResult :: (OCState, [Galley]) -> RcvResult
 ocMkResult ((rcv, o1, o2), gs) = (rcv, gs, o1 # o2)
 
 ocGalleyFrom1, ocGalleyFrom2 :: Bool -> Constraint -> Galley -> SToc
-ocGalleyFrom1 forcing co g@(name, Preceding, _) s = (s, [g])
-ocGalleyFrom1 forcing co g@(name, Following, _) s@(rcv, o1, o2) =
+ocGalleyFrom1 forcing co g@(Galley name Preceding _) s = (s, [g])
+ocGalleyFrom1 forcing co g@(Galley name Following _) s@(rcv, o1, o2) =
   if name `notElem` targets o2
     then (s, [g])
     else let (rcv', gs2, o2') = receive o2 True (co &- o1) g
           in ocGalleysFrom2 forcing co gs2 (rcv || rcv', o1, o2')
 
-ocGalleyFrom2 forcing co g@(name, Following, _) s = (s, [g])
-ocGalleyFrom2 forcing co g@(name, Preceding, _) s@(rcv, o1, o2) =
+ocGalleyFrom2 forcing co g@(Galley name Following _) s = (s, [g])
+ocGalleyFrom2 forcing co g@(Galley name Preceding _) s@(rcv, o1, o2) =
   if name `notElem` targets o1
     then (s, [g])
     else let (rcv', gs1, o1') = receive o1 forcing (co &- o2) g
@@ -194,7 +199,7 @@ o1 # o2 = o
       Object
       { eval = ocEval o1 o2
       , receive =
-          (\forcing co g@(name, d, o') ->
+          (\forcing co g@(Galley name d o') ->
               let send1 =
                     let (r, gs, o1') = receive o1 forcing (co &- o2) g
                     in ocMkResult $ ocGalleysFrom1 forcing co gs (r, o1', o2)
@@ -317,7 +322,7 @@ prefixConc c o = o'
       }
 
 forward :: Galley -> Galley
-forward (name, d, o) = (name, Following, o)
+forward (Galley name d o) = Galley name Following o
 
 attach :: String -> Object -> Object
 attach name = attach'
@@ -333,14 +338,14 @@ attach name = attach'
                     NoSpace o1 -> error "attach: NoSpace without constraints!"
                     Suspended o1 ->
                       if isEmpty co
-                        then Sending [(name, Following, attach' o1)] nul
+                        then Sending [Galley name Following (attach' o1)] nul
                         else Suspended (attach' o1)
                     Sending gs o1 -> Sending gs (attach' o1)
                     Yielding c o1 ->
                       if co &? c
                         then Yielding c (attach' o1)
                         else Sending
-                              [(name, Following, attach' (prefix c o1))]
+                              [Galley name Following $ attach' (prefix c o1) ]
                               nul)
           , receive =
               (\forcing co g -> thrdUpd3 attach' $ receive o forcing co g)
@@ -362,7 +367,7 @@ target name = o
                       Just 0 -> Disappearing
                       _ -> Suspended o)
       , receive =
-          (\forcing co g@(name', d', o') ->
+          (\forcing co g@(Galley name' d' o') ->
               case co of
                 _ ->
                   if name /= name'
@@ -379,7 +384,7 @@ target name = o
                                     (True, gs1, (attach name o'' # o))
                                   Yielding c o'' ->
                                     if co &? c
-                                      then let g' = (name', Following, o'')
+                                      then let g' = Galley name' Following o''
                                                (rcv, gs1, o1) = receive
                                                                 (prefix c o)
                                                                 forcing
@@ -387,7 +392,7 @@ target name = o
                                                                 g'
                                           in (True, gs1, o1)
                                       else ( False
-                                          , [(name, Following, prefix c o'')]
+                                          , [Galley name Following $ prefix c o'']
                                           , nul))
       , openTargets = [name]
       , delayedTargets = []
@@ -408,7 +413,7 @@ recurse ff = o
                 then Disappearing
                 else Suspended o)
       , receive =
-          (\forcing co g@(name, d, o') ->
+          (\forcing co g@(Galley name d o') ->
               case co of
                 Just 0 -> (False, [forward g], nul)
                 _ ->
@@ -433,7 +438,7 @@ delay o = o'
                 then Disappearing
                 else Suspended o')
       , receive =
-          (\forcing co g@(name, d, o') ->
+          (\forcing co g@(Galley name d o') ->
               case co of
                 Just 0 -> (False, [forward g], nul)
                 _ ->
@@ -493,7 +498,7 @@ recurseF ff = f
                     then Disappearing
                     else Suspended o)
           , receive =
-              (\forcing co g@(name, d, o') ->
+              (\forcing co g@(Galley name d o') ->
                   case co of
                     Just 0 -> (False, [forward g], nul)
                     _ ->
@@ -574,7 +579,7 @@ string_of_Object forcing = f 10 []
               printstray gs ++
               case gs of
                 [] -> f (n - 1) [] o'
-                (g@(name, d, og):gs1) ->
+                (g@(Galley name d og):gs1) ->
                   if name `elem` targets o'
                     then case receive o' False Nothing g of
                           (False, gs2, o2) ->
@@ -588,7 +593,7 @@ string_of_Object forcing = f 10 []
               printstray gs' ++
               case gs ++ gs' of
                 [] -> f (n - 1) [] o'
-                (g@(name, d, og):gs1) ->
+                (g@(Galley name d og):gs1) ->
                   if name `elem` targets o'
                     then case receive o' False Nothing g of
                           (False, gs2, o2) ->
@@ -600,7 +605,7 @@ string_of_Object forcing = f 10 []
             NoSpace o' -> "<<<NoSpace --- continuing>>>\n" ++ f n gs o'
             Yielding c o' -> string_of_Component c ++ f n gs o'
 
-string_of_stray_galley (name, d, o) =
+string_of_stray_galley (Galley name d o) =
   "No target for galley `" ++
   name ++
   "&&" ++
